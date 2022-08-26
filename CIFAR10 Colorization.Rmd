@@ -1,0 +1,813 @@
+---
+jupyter:
+  jupytext:
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.1'
+      jupytext_version: 1.2.4
+  kernelspec:
+    display_name: Python 3
+    language: python
+    name: python3
+---
+
+<!-- #region {"id": "y2NHVvUwF0-6"} -->
+# CIFAR10 Colorization
+
+In this part of the assignment, we want to do an image colorization task using PyTorch on CIFAR10 dataset. We want to train a model that colors  a black-and-white image.
+<!-- #endregion -->
+
+<!-- #region {"id": "U-HuWeIBGlj1"} -->
+## Import Libraries
+
+Import needed libraries
+<!-- #endregion -->
+
+```{python id=W2-QrdeQGlj2}
+import matplotlib.pyplot as plt
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torchvision
+import tqdm
+
+from random import sample
+from torch.utils.data import Dataset
+import cv2
+
+from time import time
+from torchvision import transforms
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 35}, id=GfFbrjgn__s1, outputId=8a33fe5a-e6a0-4da1-dbad-239c925770c5}
+cuda = torch.device('cuda')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device
+```
+
+<!-- #region {"id": "vljvz3SpG_Hs"} -->
+## Custom Dataset
+
+Define a custom dataset class by extensing `torch.utils.data.Dataset`
+
+**Notice:** your dataset should output two things: black-and-white image and the RGB image
+
+**Hint:** You don't have to reinvent the wheel. Your class should just be a wrapper for CIFAR10 dataset
+<!-- #endregion -->
+
+```{python id=vuKQ_vGSwEWK}
+class Normalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.sub_(m).div_(s)
+        return tensor
+
+
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+        return tensor
+
+norm_rgb = Normalize(mean=(0.48, 0.48, 0.48), std=(0.2, 0.2, 0.2))
+norm_black_white = Normalize(mean=(0.48, 0.48), std=(0.2, 0.2))
+
+un_norm_rgb = UnNormalize(mean=(0.48, 0.48, 0.48), std=(0.2, 0.2, 0.2))
+un_norm_black_white = UnNormalize(mean=(0.48, 0.48), std=(0.2, 0.2))
+```
+
+```{python id=vZjL8dbYb9bp}
+class BlackWhiteDataset(torch.utils.data.Dataset):
+  def __init__(self, train, root='./data', download = True , transform = None):
+    self.is_train = train
+    self.transform = transform
+    self.pure_trainset = torchvision.datasets.CIFAR10(root=root, train=train, download=download, transform=transform)
+
+
+  def __getitem__(self, idx):
+    image, label = self.pure_trainset[idx]
+    black_white_image = cv2.cvtColor(image.permute(1, 2, 0).numpy(), cv2.COLOR_BGR2GRAY)
+    black_white_image = black_white_image.reshape(1 ,32 ,32)
+    black_white_image = torch.tensor(black_white_image)
+    # return norm_black_white(black_white_image), norm_rgb(image)
+    return black_white_image, image
+
+  def __len__(self):
+    return len(self.pure_trainset)
+```
+
+<!-- #region {"id": "pqoRjKPAG1y2"} -->
+## Transforms & Dataset & Dataloader
+
+**Notice:** Use your defined custom dataset class for defining the datasets
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/'}, id=B9Iz0wpLzBrI, outputId=5ab32eb2-7361-4d2a-9797-3b843f085248}
+def load_balck_white_trainset():
+  transform_train = transforms.Compose([
+    transforms.ToTensor(),
+  ])
+  trainset = BlackWhiteDataset(
+      root='./data', 
+      train=True, 
+      download=True, 
+      transform=transform_train
+      )
+  return trainset
+
+
+def split_val_data_balck_white(trainset, train_ratio=0.9):
+  train_size = int(train_ratio * len(trainset))
+  val_size = len(trainset) - train_size
+
+  train_set, val_set = torch.utils.data.random_split(trainset, (train_size, val_size))
+  return train_set, val_set
+
+def get_train_val_balck_white_loader(train_set, val_set):
+  trainloader = torch.utils.data.DataLoader(
+      train_set, batch_size=256, shuffle=True, num_workers=2
+      )
+  valloader = torch.utils.data.DataLoader(
+      val_set, batch_size=512, shuffle=False, num_workers=2
+      )
+  return trainloader, valloader
+
+
+def laod_balck_white_testset():
+  transform_test = transforms.Compose([
+    transforms.ToTensor(),
+  ])
+  testset = BlackWhiteDataset(
+      root='./data', 
+      train=False, 
+      download=True, 
+      transform=transform_test
+      )
+  return testset
+
+def get_balck_white_test_loader(testset):
+  testloader = torch.utils.data.DataLoader(
+      testset, batch_size=512, shuffle=False, num_workers=2
+      )
+  return testloader
+    
+
+black_white_trainset = load_balck_white_trainset()
+black_white_train_set, black_white_val_set = split_val_data_balck_white(black_white_trainset)
+black_white_trainloader, black_white_valloader = get_train_val_balck_white_loader(black_white_train_set, black_white_val_set)
+
+
+black_white_testset = laod_balck_white_testset()
+black_white_testloader = get_balck_white_test_loader(black_white_testset)
+```
+
+<!-- #region {"id": "D4Nz6IWxINoq"} -->
+## Dataset Visualization
+
+Visualize your dataset (black-and-white image along with the RGB image) by sampling from your trainset
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 400}, id=7SmqIzVJkWP-, outputId=017c064b-9eec-47b7-c852-428d0f4f558a}
+fig = plt.figure(figsize=(15, 7))
+
+balck_white_sample = sample([(black_white, rgb) for black_white, rgb in black_white_trainset], 20)
+
+for both_sample in range(2):
+  for i in range(10):
+    black_withe_iamge , rgb = balck_white_sample[both_sample * 10 + i]
+    fig.add_subplot(4, 10, both_sample * 20 + i + 1)
+    # plt.imshow(un_norm_black_white(black_withe_iamge.clone().detach()).permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.imshow(black_withe_iamge.permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.axis("off")
+    fig.add_subplot(4, 10, both_sample * 20 + i + 10 + 1)
+    # plt.imshow(un_norm_rgb(rgb.clone().detach()).permute(1, 2, 0).numpy())
+    plt.imshow(rgb.permute(1, 2, 0).numpy())
+    plt.axis("off")
+
+
+plt.show()
+```
+
+<!-- #region {"id": "tYXibse_I6Sw"} -->
+## Model
+
+Define your model here (Input: black-and-white image, Output: RGB image)
+
+**Hint:** You can implement an autoencoder that does the colorization task for you. UNet could be a viable option 
+<!-- #endregion -->
+
+```{python id=iBhb2peXuA8o}
+class ColNN(nn.Module):
+    def __init__(self):
+        super(ColNN, self).__init__()
+
+        self.down1 = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+        )
+        self.down3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        
+        self.fc1 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        self.fc2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        self.fc3 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+        )
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),
+        )
+
+        
+    def forward(self, x):
+        d1 = self.down1(x)
+        d1_relu = F.relu(d1)
+        d2 = self.down2(d1_relu)
+        d2_relu = F.relu(d2)
+        d3 = self.down3(d2_relu)
+        d3_relu = F.relu(d3)
+
+        f1 = self.fc1(d3_relu)
+        f1_relu = F.relu(f1)
+        f2 = self.fc2(f1_relu)
+        f2_relu = F.relu(f2)
+        f3 = self.fc3(f2_relu)
+        f3_relu = F.relu(f3)
+
+        u1 = self.up1(f3_relu)
+        u1_relu = F.relu(u1)
+        u2 = self.up2(u1_relu)
+        u2_relu = F.relu(u2)
+        out = self.up3(u2_relu)
+        
+        return out
+
+net = ColNN()
+net = net.to('cuda')
+```
+
+<!-- #region {"id": "ox3GdhWkKSfy"} -->
+## Train
+
+Train your model
+
+Tasks:
+- [ ] Things that are needed to be printed in each epoch:
+  - Number of epoch
+  - Train loss
+  - Validation loss
+- [ ] save train/validation loss (of each epoch) in an array for later usage
+<!-- #endregion -->
+
+```{python id=a7QaD8W30p6h}
+optimizer = torch.optim.Adam(params=net.parameters(), lr=1e-2)
+criterion = nn.MSELoss()
+
+def train_epoch(net: nn.Module, criterion: nn.Module, optimizer: torch.optim.Optimizer, dataloader: torch.utils.data.DataLoader):
+    count = 0
+    average_loss = [0]
+    i = 0
+
+    net.train()
+    with tqdm.tqdm(enumerate(dataloader), total=len(dataloader)) as pbar:
+        for i, (black_withe_iamge, rgb) in pbar:
+          black_withe_iamge = black_withe_iamge.to(device)
+          rgb = rgb.to(device)
+          pred = net(black_withe_iamge)
+          loss = criterion(pred, rgb)
+          optimizer.zero_grad()
+          loss.backward()
+          optimizer.step()
+          average_loss[-1] += loss.item()
+          pbar.set_description(str(i))
+          count += 1
+    return average_loss[-1] / count
+
+def eval_epoch(net: nn.Module, criterion: nn.Module, dataloader: torch.utils.data.DataLoader):
+    count = 0
+    average_loss = [0]
+    i = 0
+    net.eval()
+    with tqdm.tqdm(enumerate(dataloader), total=len(dataloader)) as pbar:
+        for i, (black_withe_iamge, rgb) in pbar:
+          black_withe_iamge = black_withe_iamge.to(device)
+          rgb = rgb.to(device)
+          predict = net(black_withe_iamge)
+          loss = criterion(predict, rgb)
+          average_loss[-1] += loss.item()
+          pbar.set_description(str(i))
+          count += 1
+    return average_loss[-1] / count
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/'}, id=RPip-00j0fm7, outputId=e5fe24e5-7ca8-4456-800e-1f977cac88d6}
+epochs = 100
+train_loss = []
+val_loss = []
+
+for e in range(epochs):
+
+    start_time = time()
+
+    train_res = train_epoch(net, criterion, optimizer, black_white_trainloader)
+    train_loss.append(train_res)
+    print('Train Loss:',train_res)
+    val_res = eval_epoch(net, criterion, black_white_valloader)
+    val_loss.append(val_res)
+    print('Validation Loss:',val_res)
+
+    end_time = time()
+
+    print(f'Epoch {e+1:3} finished in {end_time - start_time:.2f}s')
+```
+
+<!-- #region {"id": "TEM_ntRJLjLR"} -->
+### Visualize Loss plot
+
+Using the arrays that you have (from task 2 in the above section), visualize the loss plot (train and validation together)
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 445}, id=fKIFO9tcL5c5, outputId=9d4d6bb5-31a9-41e0-f93c-e4217505ab92}
+fig = plt.figure(figsize=(15, 7))
+
+plt.plot(train_loss)
+plt.plot(val_loss)
+
+plt.legend(["Train", "Validation"])
+```
+
+<!-- #region {"id": "ekWfxMkpKot4"} -->
+## Evaluation
+
+1. Sample 36 random samples from testset (your own dataset class)
+2. Give each of the 36 samples to your trained model and get the outputs
+3. Visualize `input` (black-and-white image), `output` (output of the model with the given black-and-white input image) and `ground truth` (the actual RGB image)
+
+
+<!-- #endregion -->
+
+```{python id=zpINA4nWIFE1}
+pred_test = []
+net.eval()
+with torch.no_grad():
+  for i, (black_withe_iamge, rgb) in enumerate(black_white_testloader):
+        black_withe_iamge = black_withe_iamge.to(device)
+        rgb = rgb.to(device)
+        pred = net(black_withe_iamge)
+        for each_black_withe_iamge, each_rgb, each_pred in zip(black_withe_iamge, rgb, pred):
+            pred_test.append([each_black_withe_iamge.to('cpu'), each_rgb.to('cpu'), each_pred.to('cpu')])
+
+sample_pred_test = sample(pred_test, 36)
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 1000}, id=6jXimYICI-tY, outputId=04701e4c-5ac6-435e-9e39-759aea084c40}
+fig = plt.figure(figsize=(20,15))
+
+for each_sample in range(3):
+  for i in range(12):
+    black_withe_iamge , rgb, predict = sample_pred_test[each_sample * 12 + i]
+    fig.add_subplot(9, 12, each_sample * 36 + i + 1)
+    plt.imshow(black_withe_iamge.permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.axis("off")
+    fig.add_subplot(9, 12, each_sample * 36 + i + 12 + 1)
+    plt.imshow(rgb.permute(1, 2, 0).numpy())
+    plt.axis("off")
+    fig.add_subplot(9, 12, each_sample * 36 + i + 24 + 1)
+    plt.imshow(predict.permute(1, 2, 0).numpy())
+    plt.axis("off")
+plt.show()
+```
+
+<!-- #region {"id": "y2NHVvUwF0-6"} -->
+# CIFAR10 Colorization
+
+In this part of the assignment, we want to do an image colorization task using PyTorch on CIFAR10 dataset. We want to train a model that colors  a black-and-white image.
+<!-- #endregion -->
+
+<!-- #region {"id": "U-HuWeIBGlj1"} -->
+## Import Libraries
+
+Import needed libraries
+<!-- #endregion -->
+
+```{python id=W2-QrdeQGlj2}
+import matplotlib.pyplot as plt
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torchvision
+import tqdm
+
+from random import sample
+from torch.utils.data import Dataset
+import cv2
+
+from time import time
+from torchvision import transforms
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 35}, id=GfFbrjgn__s1, outputId=8a33fe5a-e6a0-4da1-dbad-239c925770c5}
+cuda = torch.device('cuda')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device
+```
+
+<!-- #region {"id": "vljvz3SpG_Hs"} -->
+## Custom Dataset
+
+Define a custom dataset class by extensing `torch.utils.data.Dataset`
+
+**Notice:** your dataset should output two things: black-and-white image and the RGB image
+
+**Hint:** You don't have to reinvent the wheel. Your class should just be a wrapper for CIFAR10 dataset
+<!-- #endregion -->
+
+```{python id=vuKQ_vGSwEWK}
+class Normalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.sub_(m).div_(s)
+        return tensor
+
+
+class UnNormalize(object):
+    def __init__(self, mean, std):
+        self.mean = mean
+        self.std = std
+
+    def __call__(self, tensor):
+        for t, m, s in zip(tensor, self.mean, self.std):
+            t.mul_(s).add_(m)
+        return tensor
+
+norm_rgb = Normalize(mean=(0.48, 0.48, 0.48), std=(0.2, 0.2, 0.2))
+norm_black_white = Normalize(mean=(0.48, 0.48), std=(0.2, 0.2))
+
+un_norm_rgb = UnNormalize(mean=(0.48, 0.48, 0.48), std=(0.2, 0.2, 0.2))
+un_norm_black_white = UnNormalize(mean=(0.48, 0.48), std=(0.2, 0.2))
+```
+
+```{python id=vZjL8dbYb9bp}
+class BlackWhiteDataset(torch.utils.data.Dataset):
+  def __init__(self, train, root='./data', download = True , transform = None):
+    self.is_train = train
+    self.transform = transform
+    self.pure_trainset = torchvision.datasets.CIFAR10(root=root, train=train, download=download, transform=transform)
+
+
+  def __getitem__(self, idx):
+    image, label = self.pure_trainset[idx]
+    black_white_image = cv2.cvtColor(image.permute(1, 2, 0).numpy(), cv2.COLOR_BGR2GRAY)
+    black_white_image = black_white_image.reshape(1 ,32 ,32)
+    black_white_image = torch.tensor(black_white_image)
+    # return norm_black_white(black_white_image), norm_rgb(image)
+    return black_white_image, image
+
+  def __len__(self):
+    return len(self.pure_trainset)
+```
+
+<!-- #region {"id": "pqoRjKPAG1y2"} -->
+## Transforms & Dataset & Dataloader
+
+**Notice:** Use your defined custom dataset class for defining the datasets
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/'}, id=B9Iz0wpLzBrI, outputId=5ab32eb2-7361-4d2a-9797-3b843f085248}
+def load_balck_white_trainset():
+  transform_train = transforms.Compose([
+    transforms.ToTensor(),
+  ])
+  trainset = BlackWhiteDataset(
+      root='./data', 
+      train=True, 
+      download=True, 
+      transform=transform_train
+      )
+  return trainset
+
+
+def split_val_data_balck_white(trainset, train_ratio=0.9):
+  train_size = int(train_ratio * len(trainset))
+  val_size = len(trainset) - train_size
+
+  train_set, val_set = torch.utils.data.random_split(trainset, (train_size, val_size))
+  return train_set, val_set
+
+def get_train_val_balck_white_loader(train_set, val_set):
+  trainloader = torch.utils.data.DataLoader(
+      train_set, batch_size=256, shuffle=True, num_workers=2
+      )
+  valloader = torch.utils.data.DataLoader(
+      val_set, batch_size=512, shuffle=False, num_workers=2
+      )
+  return trainloader, valloader
+
+
+def laod_balck_white_testset():
+  transform_test = transforms.Compose([
+    transforms.ToTensor(),
+  ])
+  testset = BlackWhiteDataset(
+      root='./data', 
+      train=False, 
+      download=True, 
+      transform=transform_test
+      )
+  return testset
+
+def get_balck_white_test_loader(testset):
+  testloader = torch.utils.data.DataLoader(
+      testset, batch_size=512, shuffle=False, num_workers=2
+      )
+  return testloader
+    
+
+black_white_trainset = load_balck_white_trainset()
+black_white_train_set, black_white_val_set = split_val_data_balck_white(black_white_trainset)
+black_white_trainloader, black_white_valloader = get_train_val_balck_white_loader(black_white_train_set, black_white_val_set)
+
+
+black_white_testset = laod_balck_white_testset()
+black_white_testloader = get_balck_white_test_loader(black_white_testset)
+```
+
+<!-- #region {"id": "D4Nz6IWxINoq"} -->
+## Dataset Visualization
+
+Visualize your dataset (black-and-white image along with the RGB image) by sampling from your trainset
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 400}, id=7SmqIzVJkWP-, outputId=017c064b-9eec-47b7-c852-428d0f4f558a}
+fig = plt.figure(figsize=(15, 7))
+
+balck_white_sample = sample([(black_white, rgb) for black_white, rgb in black_white_trainset], 20)
+
+for both_sample in range(2):
+  for i in range(10):
+    black_withe_iamge , rgb = balck_white_sample[both_sample * 10 + i]
+    fig.add_subplot(4, 10, both_sample * 20 + i + 1)
+    # plt.imshow(un_norm_black_white(black_withe_iamge.clone().detach()).permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.imshow(black_withe_iamge.permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.axis("off")
+    fig.add_subplot(4, 10, both_sample * 20 + i + 10 + 1)
+    # plt.imshow(un_norm_rgb(rgb.clone().detach()).permute(1, 2, 0).numpy())
+    plt.imshow(rgb.permute(1, 2, 0).numpy())
+    plt.axis("off")
+
+
+plt.show()
+```
+
+<!-- #region {"id": "tYXibse_I6Sw"} -->
+## Model
+
+Define your model here (Input: black-and-white image, Output: RGB image)
+
+**Hint:** You can implement an autoencoder that does the colorization task for you. UNet could be a viable option 
+<!-- #endregion -->
+
+```{python id=iBhb2peXuA8o}
+class ColNN(nn.Module):
+    def __init__(self):
+        super(ColNN, self).__init__()
+
+        self.down1 = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+        )
+        self.down2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+        )
+        self.down3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        
+        self.fc1 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        self.fc2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+        self.fc3 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(128),
+        )
+
+        self.up1 = nn.Sequential(
+            nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+        )
+        self.up2 = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+        )
+        self.up3 = nn.Sequential(
+            nn.ConvTranspose2d(32, 3, kernel_size=4, stride=2, padding=1),
+        )
+
+        
+    def forward(self, x):
+        d1 = self.down1(x)
+        d1_relu = F.relu(d1)
+        d2 = self.down2(d1_relu)
+        d2_relu = F.relu(d2)
+        d3 = self.down3(d2_relu)
+        d3_relu = F.relu(d3)
+
+        f1 = self.fc1(d3_relu)
+        f1_relu = F.relu(f1)
+        f2 = self.fc2(f1_relu)
+        f2_relu = F.relu(f2)
+        f3 = self.fc3(f2_relu)
+        f3_relu = F.relu(f3)
+
+        u1 = self.up1(f3_relu)
+        u1_relu = F.relu(u1)
+        u2 = self.up2(u1_relu)
+        u2_relu = F.relu(u2)
+        out = self.up3(u2_relu)
+        
+        return out
+
+net = ColNN()
+net = net.to('cuda')
+```
+
+<!-- #region {"id": "ox3GdhWkKSfy"} -->
+## Train
+
+Train your model
+
+Tasks:
+- [ ] Things that are needed to be printed in each epoch:
+  - Number of epoch
+  - Train loss
+  - Validation loss
+- [ ] save train/validation loss (of each epoch) in an array for later usage
+<!-- #endregion -->
+
+```{python id=a7QaD8W30p6h}
+optimizer = torch.optim.Adam(params=net.parameters(), lr=1e-2)
+criterion = nn.MSELoss()
+
+def train_epoch(net: nn.Module, criterion: nn.Module, optimizer: torch.optim.Optimizer, dataloader: torch.utils.data.DataLoader):
+    count = 0
+    average_loss = [0]
+    i = 0
+
+    net.train()
+    with tqdm.tqdm(enumerate(dataloader), total=len(dataloader)) as pbar:
+        for i, (black_withe_iamge, rgb) in pbar:
+          black_withe_iamge = black_withe_iamge.to(device)
+          rgb = rgb.to(device)
+          pred = net(black_withe_iamge)
+          loss = criterion(pred, rgb)
+          optimizer.zero_grad()
+          loss.backward()
+          optimizer.step()
+          average_loss[-1] += loss.item()
+          pbar.set_description(str(i))
+          count += 1
+    return average_loss[-1] / count
+
+def eval_epoch(net: nn.Module, criterion: nn.Module, dataloader: torch.utils.data.DataLoader):
+    count = 0
+    average_loss = [0]
+    i = 0
+    net.eval()
+    with tqdm.tqdm(enumerate(dataloader), total=len(dataloader)) as pbar:
+        for i, (black_withe_iamge, rgb) in pbar:
+          black_withe_iamge = black_withe_iamge.to(device)
+          rgb = rgb.to(device)
+          predict = net(black_withe_iamge)
+          loss = criterion(predict, rgb)
+          average_loss[-1] += loss.item()
+          pbar.set_description(str(i))
+          count += 1
+    return average_loss[-1] / count
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/'}, id=RPip-00j0fm7, outputId=e5fe24e5-7ca8-4456-800e-1f977cac88d6}
+epochs = 100
+train_loss = []
+val_loss = []
+
+for e in range(epochs):
+
+    start_time = time()
+
+    train_res = train_epoch(net, criterion, optimizer, black_white_trainloader)
+    train_loss.append(train_res)
+    print('Train Loss:',train_res)
+    val_res = eval_epoch(net, criterion, black_white_valloader)
+    val_loss.append(val_res)
+    print('Validation Loss:',val_res)
+
+    end_time = time()
+
+    print(f'Epoch {e+1:3} finished in {end_time - start_time:.2f}s')
+```
+
+<!-- #region {"id": "TEM_ntRJLjLR"} -->
+### Visualize Loss plot
+
+Using the arrays that you have (from task 2 in the above section), visualize the loss plot (train and validation together)
+<!-- #endregion -->
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 445}, id=fKIFO9tcL5c5, outputId=9d4d6bb5-31a9-41e0-f93c-e4217505ab92}
+fig = plt.figure(figsize=(15, 7))
+
+plt.plot(train_loss)
+plt.plot(val_loss)
+
+plt.legend(["Train", "Validation"])
+```
+
+<!-- #region {"id": "ekWfxMkpKot4"} -->
+## Evaluation
+
+1. Sample 36 random samples from testset (your own dataset class)
+2. Give each of the 36 samples to your trained model and get the outputs
+3. Visualize `input` (black-and-white image), `output` (output of the model with the given black-and-white input image) and `ground truth` (the actual RGB image)
+
+
+<!-- #endregion -->
+
+```{python id=zpINA4nWIFE1}
+pred_test = []
+net.eval()
+with torch.no_grad():
+  for i, (black_withe_iamge, rgb) in enumerate(black_white_testloader):
+        black_withe_iamge = black_withe_iamge.to(device)
+        rgb = rgb.to(device)
+        pred = net(black_withe_iamge)
+        for each_black_withe_iamge, each_rgb, each_pred in zip(black_withe_iamge, rgb, pred):
+            pred_test.append([each_black_withe_iamge.to('cpu'), each_rgb.to('cpu'), each_pred.to('cpu')])
+
+sample_pred_test = sample(pred_test, 36)
+```
+
+```{python colab={'base_uri': 'https://localhost:8080/', 'height': 1000}, id=6jXimYICI-tY, outputId=04701e4c-5ac6-435e-9e39-759aea084c40}
+fig = plt.figure(figsize=(20,15))
+
+for each_sample in range(3):
+  for i in range(12):
+    black_withe_iamge , rgb, predict = sample_pred_test[each_sample * 12 + i]
+    fig.add_subplot(9, 12, each_sample * 36 + i + 1)
+    plt.imshow(black_withe_iamge.permute(1, 2, 0).numpy().reshape(32, 32), cmap='Greys_r', interpolation='nearest')
+    plt.axis("off")
+    fig.add_subplot(9, 12, each_sample * 36 + i + 12 + 1)
+    plt.imshow(rgb.permute(1, 2, 0).numpy())
+    plt.axis("off")
+    fig.add_subplot(9, 12, each_sample * 36 + i + 24 + 1)
+    plt.imshow(predict.permute(1, 2, 0).numpy())
+    plt.axis("off")
+plt.show()
+```
+
+```{python}
+
+```
