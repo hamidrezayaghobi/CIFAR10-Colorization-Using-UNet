@@ -5,9 +5,10 @@ This project employs the PyTorch framework to implement colorization of grayscal
 
 ## Outputs
 ![Screenshot from 2023-09-13 13-50-10](https://github.com/hamidrezayaghobi/CIFAR10-Colorization-Using-UNet/assets/59170724/90496d7f-a384-498f-a637-b0e9072706fc)
-Top Row: Grayscale (black-and-white) input images.
-Middle Row: Ground-truth color reference images.
-Bottom Row: Model-generated colorized outputs.
+
+Top Row: Grayscale (black-and-white) input images. \n
+Middle Row: Ground-truth color reference images. \n
+Bottom Row: Model-generated colorized outputs. \n
 
 ## Accuracy:
 | Model | Loss on Validation Data |
